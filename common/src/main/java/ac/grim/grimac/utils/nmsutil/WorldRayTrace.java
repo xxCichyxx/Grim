@@ -1,12 +1,16 @@
 package ac.grim.grimac.utils.nmsutil;
 
+import ac.grim.grimac.checks.impl.combat.Reach;
 import ac.grim.grimac.player.GrimPlayer;
 import ac.grim.grimac.utils.collisions.CollisionData;
 import ac.grim.grimac.utils.collisions.HitboxData;
 import ac.grim.grimac.utils.collisions.datatypes.CollisionBox;
+import ac.grim.grimac.utils.collisions.datatypes.NoCollisionBox;
 import ac.grim.grimac.utils.collisions.datatypes.SimpleCollisionBox;
+import ac.grim.grimac.utils.data.EntityHitData;
 import ac.grim.grimac.utils.data.HitData;
 import ac.grim.grimac.utils.data.Pair;
+import ac.grim.grimac.utils.data.packetentity.PacketEntity;
 import ac.grim.grimac.utils.math.GrimMath;
 import ac.grim.grimac.utils.math.Vector3dm;
 import com.github.retrooper.packetevents.protocol.attribute.Attributes;
@@ -17,6 +21,8 @@ import com.github.retrooper.packetevents.protocol.world.states.type.StateType;
 import com.github.retrooper.packetevents.util.Vector3d;
 import com.github.retrooper.packetevents.util.Vector3i;
 import lombok.experimental.UtilityClass;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -149,5 +155,164 @@ public class WorldRayTrace {
         }
 
         return null;
+    }
+
+    @Nullable
+    public static Object getNearestHitResult(GrimPlayer player, PacketEntity targetEntity, Vector3dm eyePos, Vector3dm lookVec) {
+        double maxAttackDistance = player.compensatedEntities.self.getAttributeValue(Attributes.ENTITY_INTERACTION_RANGE);
+        double maxBlockDistance = player.compensatedEntities.self.getAttributeValue(Attributes.BLOCK_INTERACTION_RANGE);
+
+        Vector3d startingPos = new Vector3d(eyePos.getX(), eyePos.getY(), eyePos.getZ());
+        Vector3dm startingVec = new Vector3dm(startingPos.getX(), startingPos.getY(), startingPos.getZ());
+        Ray trace = new Ray(eyePos, lookVec);
+        Vector3dm endVec = trace.getPointAtDistance(maxBlockDistance);
+        Vector3d endPos = new Vector3d(endVec.getX(), endVec.getY(), endVec.getZ());
+
+        // 1. Sprawdzamy kolizję z blokami
+        HitData blockHit = getTraverseResult(player, null, startingPos, startingVec, trace, endPos, false, true, maxBlockDistance, true);
+
+        Vector3dm closestHitVec = null;
+        PacketEntity closestEntity = null;
+
+        // Dystans do najbliższego bloku lub zasięg ataku jeśli brak bloku
+        double closestDistanceSquared = blockHit != null
+                ? blockHit.blockHitLocation().distanceSquared(startingVec)
+                : maxAttackDistance * maxAttackDistance;
+
+        // 2. Iterujemy po encjach
+        for (PacketEntity entity : player.compensatedEntities.entityMap.values().stream().filter(PacketEntity::canHit).toList()) {
+            SimpleCollisionBox box;
+
+            if (entity.equals(targetEntity)) {
+                box = entity.getPossibleCollisionBoxes();
+                box.expand(player.checkManager.getPacketCheck(Reach.class).threshold);
+
+                if (!player.packetStateData.didLastLastMovementIncludePosition || player.getClientVersion().isNewerThanOrEquals(ClientVersion.V_1_9)) {
+                    box.expand(player.getMovementThreshold());
+                }
+
+                if (ReachUtils.isVecInside(box, eyePos)) {
+                    return new EntityHitData(entity, eyePos);
+                }
+            } else {
+                CollisionBox b = entity.getMinimumPossibleCollisionBoxes();
+                if (b instanceof NoCollisionBox) continue;
+
+                box = (SimpleCollisionBox) b;
+                box.expand(-player.checkManager.getPacketCheck(Reach.class).threshold);
+
+                if (!player.packetStateData.didLastLastMovementIncludePosition || player.getClientVersion().isNewerThanOrEquals(ClientVersion.V_1_9)) {
+                    box.expand(-player.getMovementThreshold());
+                }
+            }
+
+            if (player.getClientVersion().isOlderThan(ClientVersion.V_1_9)) {
+                box.expand(0.1f);
+            }
+
+            Pair<Vector3dm, BlockFace> intercept = ReachUtils.calculateIntercept(box, trace.getOrigin(), trace.getPointAtDistance(Math.sqrt(closestDistanceSquared)));
+
+            if (intercept.first() != null) {
+                double distSquared = intercept.first().distanceSquared(startingVec);
+                if (distSquared < closestDistanceSquared) {
+                    closestDistanceSquared = distSquared;
+                    closestHitVec = intercept.first();
+                    closestEntity = entity;
+                }
+            }
+        }
+
+        // 3. Wynik: encja jeśli była bliżej, w przeciwnym razie rekord bloku
+        return closestEntity != null ? new EntityHitData(closestEntity, closestHitVec) : blockHit;
+    }
+    public static @NotNull Pair<@NotNull Double, @NotNull Object> didRayTraceHit(
+            GrimPlayer player,
+            PacketEntity targetEntity,
+            List<Pair<Vector3dm, Double>> possibleLookVecsAndEyeHeights,
+            Vector3d from) {
+
+        Object firstObstruction = null;
+        double firstObstructionDistanceSq = 0;
+
+        for (Pair<Vector3dm, Double> vectorDoublePair : possibleLookVecsAndEyeHeights) {
+            Vector3dm lookVec = vectorDoublePair.first();
+            double eye = vectorDoublePair.second();
+
+            Vector3dm eyes = new Vector3dm(from.getX(), from.getY() + eye, from.getZ());
+            final Object hitResult = WorldRayTrace.getNearestHitResult(player, targetEntity, eyes, lookVec);
+
+            if (hitResult instanceof EntityHitData entityHit && entityHit.getEntity().equals(targetEntity)) {
+                double distanceSquared = eyes.distanceSquared(entityHit.getIntersectionPoint());
+                return new Pair<>(distanceSquared, entityHit);
+            } else if (hitResult != null && firstObstruction == null) {
+                firstObstruction = hitResult;
+                if (hitResult instanceof HitData blockHit) {
+                    firstObstructionDistanceSq = eyes.distanceSquared(blockHit.blockHitLocation());
+                } else if (hitResult instanceof EntityHitData entityHit) {
+                    firstObstructionDistanceSq = eyes.distanceSquared(entityHit.getIntersectionPoint());
+                }
+            }
+        }
+
+        assert firstObstruction != null;
+        return new Pair<>(firstObstructionDistanceSq, firstObstruction);
+    }
+    private static HitData getTraverseResult(
+            GrimPlayer player,
+            @Nullable StateType heldItem,
+            Vector3d startingPos,
+            Vector3dm startingVec,
+            Ray trace,
+            Vector3d endPos,
+            boolean sourcesHaveHitbox,
+            boolean checkInside,
+            double knownDistance,
+            boolean shrinkBlocks) {
+
+        return traverseBlocks(player, startingPos, endPos, (block, vector3i) -> {
+            CollisionBox data = HitboxData.getBlockHitbox(player, heldItem, player.getClientVersion(), block, false, vector3i.getX(), vector3i.getY(), vector3i.getZ());
+            List<SimpleCollisionBox> boxes = new ArrayList<>();
+            data.downCast(boxes);
+
+            double bestHitResult = Double.MAX_VALUE;
+            Vector3dm bestHitLoc = null;
+            BlockFace bestFace = null;
+
+            for (SimpleCollisionBox box : boxes) {
+                if (shrinkBlocks) box.expand(-player.getMovementThreshold());
+
+                if (checkInside && ReachUtils.isVecInside(box, trace.getOrigin())) {
+                    return null;
+                }
+
+                Pair<Vector3dm, BlockFace> intercept = ReachUtils.calculateIntercept(box, trace.getOrigin(), trace.getPointAtDistance(knownDistance));
+                if (intercept.first() == null) continue;
+
+                Vector3dm hitLoc = intercept.first();
+                if (hitLoc.distanceSquared(startingVec) < bestHitResult) {
+                    bestHitResult = hitLoc.distanceSquared(startingVec);
+                    bestHitLoc = hitLoc;
+                    bestFace = intercept.second();
+                }
+            }
+
+            if (bestHitLoc != null) {
+                return new HitData(vector3i, bestHitLoc, bestFace, block);
+            }
+
+            if (sourcesHaveHitbox &&
+                    (player.compensatedWorld.isWaterSourceBlock(vector3i.getX(), vector3i.getY(), vector3i.getZ())
+                            || player.compensatedWorld.getLavaFluidLevelAt(vector3i.getX(), vector3i.getY(), vector3i.getZ()) == (8 / 9f))) {
+                double waterHeight = player.compensatedWorld.getFluidLevelAt(vector3i.getX(), vector3i.getY(), vector3i.getZ());
+                SimpleCollisionBox box = new SimpleCollisionBox(vector3i.getX(), vector3i.getY(), vector3i.getZ(), vector3i.getX() + 1, vector3i.getY() + waterHeight, vector3i.getZ() + 1);
+
+                Pair<Vector3dm, BlockFace> intercept = ReachUtils.calculateIntercept(box, trace.getOrigin(), trace.getPointAtDistance(knownDistance));
+                if (intercept.first() != null) {
+                    return new HitData(vector3i, intercept.first(), intercept.second(), block);
+                }
+            }
+
+            return null;
+        });
     }
 }

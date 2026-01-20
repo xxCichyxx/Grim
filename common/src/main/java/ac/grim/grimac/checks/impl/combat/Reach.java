@@ -71,7 +71,7 @@ public class Reach extends Check implements PacketCheck {
     private final Set<Vector3i> blocksChangedThisTick = new HashSet<>();
     public static final double extraSearchDistance = 3;
     private boolean cancelImpossibleHits;
-    private double threshold;
+    public double threshold;
     private double cancelBuffer; // For the next 4 hits after using reach, we aggressively cancel reach
 
     public Reach(GrimPlayer player) {
@@ -219,7 +219,7 @@ public class Reach extends Check implements PacketCheck {
             CollisionBox blockBox = HitboxData.getBlockHitbox(player, null, player.getClientVersion(), stateInside, false, blockPos.getX(), blockPos.getY(), blockPos.getZ());
             // Jeśli blok ma kolizję i oczy gracza są w środku
             if (blockBox instanceof SimpleCollisionBox simpleBox && ReachUtils.isVecInside(simpleBox, eyePosCheck)) {
-                String name = stateInside.getType().getName().getKey();
+                String name = stateInside.getType().getName();
                 // Wykluczenia: pajęczyny, ciecze, portale, pnącza, drabiny
                 if (!name.contains("web") && !name.contains("water") && !name.contains("lava") && !name.contains("portal") && !name.contains("vine") && !name.contains("ladder")) {
                     return new CheckResult(ResultType.WALL_HIT, "Inside block=" + name + " ");

@@ -16,6 +16,7 @@
 package ac.grim.grimac.utils.data.packetentity;
 
 import ac.grim.grimac.player.GrimPlayer;
+import ac.grim.grimac.utils.collisions.datatypes.CollisionBox;
 import ac.grim.grimac.utils.collisions.datatypes.SimpleCollisionBox;
 import ac.grim.grimac.utils.data.ReachInterpolationData;
 import ac.grim.grimac.utils.data.TrackedPosition;
@@ -236,6 +237,13 @@ public class PacketEntity extends TypedPacketEntity {
             return newPacketLocation.getPossibleHitboxCombined();
         }
 
+        return ReachInterpolationData.combineCollisionBox(oldPacketLocation.getPossibleHitboxCombined(), newPacketLocation.getPossibleHitboxCombined());
+    }
+
+    public CollisionBox getMinimumPossibleCollisionBoxes() {
+        if (oldPacketLocation == null) {
+            return newPacketLocation.getPossibleHitboxCombined();
+        }
         return ReachInterpolationData.combineCollisionBox(oldPacketLocation.getPossibleHitboxCombined(), newPacketLocation.getPossibleHitboxCombined());
     }
 
